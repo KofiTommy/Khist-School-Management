@@ -195,8 +195,8 @@ if($_LandingSchoolName === ""){
 }
 $_LandingSchoolNameSafe = htmlspecialchars($_LandingSchoolName, ENT_QUOTES, "UTF-8");
 $_LandingFacebookUrl = "https://www.facebook.com/Ayirebiseniorhighschool/";
-$_LandingWhatsappNumber = "+233245065954";
-$_LandingWhatsappUrl = "https://wa.me/233245065954?text=".rawurlencode("Hello, I need help with admission.");
+$_LandingWhatsappNumber = "+233246353996";
+$_LandingWhatsappUrl = "https://wa.me/233246353996?text=".rawurlencode("Hello, I need help with admission.");
 $_LandingPhoneHref = preg_replace('/[^0-9+]/', '', $_LandingHelpLine);
 if($_LandingPhoneHref !== ""){
     $_LandingPhoneHref = "tel:".$_LandingPhoneHref;

@@ -39,19 +39,81 @@ function gd_get_base_tables($con) {
     return $tables;
 }
 
+function gd_table_policies() {
+    return array(
+        'tblapi' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps the activation/API key record used by login protection.'
+        ),
+        'tblcompany' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps school name, branding, and other company setup data.'
+        ),
+        'tblbranch' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps branch records and branch setup information.'
+        ),
+        'tblcurrency' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps the default currency and symbol used by the system.'
+        ),
+        'tblmodule' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps the module catalog required by user access features.'
+        ),
+        'tblaccounttype' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps finance/account reference types needed after reset.'
+        ),
+        'tblonlineadmissionpaymentsetting' => array(
+            'action' => 'protect',
+            'label' => 'Protected',
+            'reason' => 'Keeps online admission portal and payment configuration.'
+        ),
+        'tblsystemuser' => array(
+            'action' => 'preserve_admins',
+            'label' => 'Keep Admins',
+            'reason' => 'Keeps administrator accounts while removing student, teacher, and office users.'
+        ),
+        'tblusermodulepermission' => array(
+            'action' => 'preserve_admins',
+            'label' => 'Keep Admin Access',
+            'reason' => 'Keeps module permissions only for administrator accounts that remain.'
+        )
+    );
+}
+
+function gd_table_policy($table) {
+    $policies = gd_table_policies();
+    if (isset($policies[$table])) {
+        return $policies[$table];
+    }
+    return array(
+        'action' => 'clear',
+        'label' => 'Clear',
+        'reason' => 'Operational data will be removed during the reset.'
+    );
+}
+
 function gd_reset_operational_data($con) {
     $currentUser = mysqli_real_escape_string($con, (string)($_SESSION['USERID'] ?? ''));
     $tables = gd_get_base_tables($con);
-
-    // These tables keep the system usable after reset. Student/teacher users are deleted separately.
-    $protectedTables = array(
-        'tblcompany',
-        'tblbranch',
-        'tblcurrency',
-        'tblmodule',
-        'tblaccounttype',
-        'tblsystemuser'
-    );
+    $policies = gd_table_policies();
+    $protectedTables = array();
+    $specialTables = array();
+    foreach ($policies as $table => $policy) {
+        if (($policy['action'] ?? '') === 'protect') {
+            $protectedTables[] = $table;
+        } elseif (($policy['action'] ?? '') === 'preserve_admins') {
+            $specialTables[] = $table;
+        }
+    }
 
     $deleted = array();
     $failed = array();
@@ -59,7 +121,7 @@ function gd_reset_operational_data($con) {
     @mysqli_query($con, "SET FOREIGN_KEY_CHECKS=0");
 
     foreach ($tables as $table) {
-        if (in_array($table, $protectedTables, true)) {
+        if (in_array($table, $protectedTables, true) || in_array($table, $specialTables, true)) {
             continue;
         }
 
@@ -85,9 +147,30 @@ function gd_reset_operational_data($con) {
         }
     }
 
+    if (gd_table_exists($con, 'tblusermodulepermission')) {
+        $beforePermissions = gd_count_table($con, 'tblusermodulepermission');
+        $okPermissions = @mysqli_query(
+            $con,
+            "DELETE perm
+             FROM tblusermodulepermission perm
+             LEFT JOIN tblsystemuser su ON su.userid=perm.userid
+             WHERE su.userid IS NULL
+                OR LOWER(COALESCE(su.accesslevel,''))<>'administrator'"
+        );
+        if ($okPermissions) {
+            $afterPermissions = gd_count_table($con, 'tblusermodulepermission');
+            $deleted[] = array(
+                'table' => 'tblusermodulepermission (non-admin users)',
+                'rows' => max(0, $beforePermissions - $afterPermissions)
+            );
+        } else {
+            $failed[] = array('table' => 'tblusermodulepermission', 'error' => mysqli_error($con));
+        }
+    }
+
     @mysqli_query($con, "SET FOREIGN_KEY_CHECKS=1");
 
-    return array('deleted' => $deleted, 'failed' => $failed, 'protected' => $protectedTables);
+    return array('deleted' => $deleted, 'failed' => $failed, 'protected' => array_keys($policies));
 }
 
 $isAllowed = gd_is_allowed_admin();
@@ -110,7 +193,6 @@ if ($isAllowed && isset($_POST['confirm_reset'])) {
 }
 
 $previewTables = $isAllowed ? gd_get_base_tables($con) : array();
-$protectedPreview = array('tblcompany', 'tblbranch', 'tblcurrency', 'tblmodule', 'tblaccounttype', 'tblsystemuser');
 ?>
 <html>
 <head>
@@ -266,6 +348,10 @@ $protectedPreview = array('tblcompany', 'tblbranch', 'tblcurrency', 'tblmodule',
     background: #ecfdf5;
     color: #166534;
 }
+.gd-pill-admin {
+    background: #fef3c7;
+    color: #92400e;
+}
 @media (max-width: 820px) {
     .gd-page {
         padding: 12px;
@@ -316,9 +402,10 @@ $protectedPreview = array('tblcompany', 'tblbranch', 'tblcurrency', 'tblmodule',
             <p>The old button did not clear everything. It only deleted a fixed list of older tables. This safer version scans the database tables dynamically.</p>
             <ul>
                 <li>Deletes operational records from all database tables it can safely process.</li>
-                <li>Deletes student and teacher accounts from `tblsystemuser`.</li>
+                <li>Preserves the activation key in <code>tblapi</code> so the system does not ask for API authentication again after reset.</li>
                 <li>Preserves administrator accounts so you do not lock yourself out.</li>
-                <li>Preserves basic setup tables like company, branch, currency, modules and account types.</li>
+                <li>Deletes student, teacher, and office user accounts while keeping admin-only access records.</li>
+                <li>Preserves basic setup tables like company, branch, currency, modules, account types, and online admission settings.</li>
             </ul>
             <form method="post" action="global_deletes.php" class="gd-form" onsubmit="return confirm('This will clear school operational data. Have you taken a database backup?');">
                 <label for="confirmation_phrase">Type RESET SCHOOL DATA to continue</label>
@@ -329,17 +416,24 @@ $protectedPreview = array('tblcompany', 'tblbranch', 'tblcurrency', 'tblmodule',
 
         <section class="gd-panel">
             <h2>Table Preview</h2>
-            <p>Protected tables stay usable. All other listed tables are cleared when you confirm.</p>
+            <p>Protected tables stay usable. Admin-only tables keep just enough access data for you to log back in and continue setup.</p>
             <div class="gd-table-list">
                 <table>
-                    <thead><tr><th>Table</th><th>Action</th></tr></thead>
+                    <thead><tr><th>Table</th><th>Action</th><th>Reason</th></tr></thead>
                     <tbody>
                     <?php
                     foreach ($previewTables as $table) {
-                        $protected = in_array($table, $protectedPreview, true);
+                        $policy = gd_table_policy($table);
+                        $pillClass = 'gd-pill-delete';
+                        if ($policy['action'] === 'protect') {
+                            $pillClass = 'gd-pill-protect';
+                        } elseif ($policy['action'] === 'preserve_admins') {
+                            $pillClass = 'gd-pill-admin';
+                        }
                         echo "<tr>";
                         echo "<td>".htmlspecialchars($table)."</td>";
-                        echo "<td><span class='gd-pill ".($protected ? 'gd-pill-protect' : 'gd-pill-delete')."'>".($protected ? 'Protected' : 'Clear')."</span></td>";
+                        echo "<td><span class='gd-pill ".$pillClass."'>".htmlspecialchars($policy['label'])."</span></td>";
+                        echo "<td>".htmlspecialchars($policy['reason'])."</td>";
                         echo "</tr>";
                     }
                     ?>
